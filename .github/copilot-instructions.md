@@ -26,12 +26,18 @@ completo de cómo se llegó a esta solución antes de proponer cambios.
    tal cual llegan, igual que `PISerial`/`PISocket` de pipython. Si te
    piden agregar parseo GCS o reintentos automáticos acá, primero revisá
    si `pipython.pidevice.gcsmessages.GCSMessages` ya lo resuelve.
-3. **Usar siempre `with GCSDevice(...) as pidevice:`**, nunca
-   `pidevice = GCSDevice(...)` + `pidevice.close()` suelto. Motivo:
-   `PIGateway._connection_status_changed_callbacks` es una lista
-   compartida a nivel de clase; solo `__exit__`/`__del__` (que dispara
-   `with`) la desregistra. Sin `with`, conexiones sucesivas en el mismo
-   proceso acumulan callbacks stale y producen errores confusos.
+3. **Nunca `pidevice = GCSDevice(...)` + `pidevice.close()` suelto.**
+   Motivo: `PIGateway._connection_status_changed_callbacks` es una lista
+   compartida a nivel de clase; solo `__exit__`/`__del__` la desregistra.
+   Sin eso, conexiones sucesivas en el mismo proceso acumulan callbacks
+   stale y producen errores confusos (`PIFtdiConnectionError` en una
+   conexión que en realidad está viva). Dos formas válidas de cerrar:
+   - `with GCSDevice(...) as pidevice:` cuando el script no necesita
+     correrse celda por celda.
+   - `cleanup_gcsdevice(pidevice)` (en `pi_ftdi_gateway`, desde v0.3.2) en
+     vez de `pidevice.close()`, para scripts de Spyder/Jupyter divididos
+     en celdas `# %%`, donde el cuerpo de un `with` no puede repartirse
+     en celdas separadas.
 4. **`pidevice.close()`, no `pidevice.CloseConnection()`** salvo que ya
    estés dentro de un `with` (que lo hace solo). `CloseConnection()` es
    específico de la DLL nativa (`GCSDll`); este gateway lo expone como
@@ -51,6 +57,15 @@ completo de cómo se llegó a esta solución antes de proponer cambios.
   `pidevice.bufstate is True`. Esto NO tira error si te olvidás — da
   resultados silenciosamente incorrectos. Revisar siempre este patrón en
   cualquier código nuevo que use `qGWD`/`qDRR`/`qDDL`/`qHIT`.
+- **`WAV_LIN` con `amplitude` negativa NO genera una rampa descendente en
+  este firmware** — la ignora, deja el segmento plano en el valor de
+  `offset` (confirmado leyendo la wave table completa con `qGWD`, no fue
+  error de lectura parcial). Para una rampa simétrica (sube y baja, tipo
+  triángulo o ida-vuelta) usar **`WAV_RAMP`** en una sola llamada — tiene
+  un parámetro `center` que marca el índice del pico, y sí sube y baja
+  correctamente (confirmado con hardware real: pico exacto en el índice
+  esperado, primer y último punto vuelven al mismo valor). No usar dos
+  `WAV_LIN` con signos opuestos para esto.
 - **WTR vs RTR — relojes distintos, no confundir la cantidad de muestras a
   pedir con `qDRR`.** El wave generator avanza un punto de la wave table
   cada `WTR` ciclos de servo; el data recorder graba una muestra cada

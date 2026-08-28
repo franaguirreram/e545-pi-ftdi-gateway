@@ -40,7 +40,7 @@ from usb.core import USBError, USBTimeoutError
 from pyftdi.ftdi import Ftdi, FtdiError
 from pipython.pidevice.interfaces.pigateway import PIGateway, PI_CONTROLLER_CODEPAGE
 
-__all__ = ['PIFtdiGateway', 'PIFtdiConnectionError', 'list_devices', 'PI_VID', 'PI_PID']
+__all__ = ['PIFtdiGateway', 'PIFtdiConnectionError', 'list_devices', 'cleanup_gcsdevice', 'PI_VID', 'PI_PID']
 
 PI_VID = 0x1a72
 PI_PID = 0x1005
@@ -285,3 +285,32 @@ class PIFtdiGateway(PIGateway):
         except (USBError, FtdiError):
             pass  # ya se está cerrando, no interesa si el USB protesta
         self.call_connection_status_changed_callback(self)
+
+
+def cleanup_gcsdevice(pidevice):
+    """[Fix "solo corre una vez por consola"] Cierra una GCSDevice
+    desregistrando su callback de cambio de estado, igual que hace
+    'with GCSDevice(...) as pidevice:' (vía __exit__/_cleanup) -- pero sin
+    necesitar el bloque 'with', que no sirve en scripts pensados para
+    correr celda por celda (Spyder/Jupyter), ya que el cuerpo de un 'with'
+    no puede repartirse en celdas separadas.
+
+    Motivo del bug que esto evita: pipython.pidevice.interfaces.pigateway.
+    PIGateway guarda sus callbacks de cambio de estado en una lista
+    COMPARTIDA a nivel de clase (PIGateway._connection_status_changed_
+    callbacks). Un pidevice.close() suelto no la desregistra -- solo
+    __exit__/__del__ lo hacen. Sin este helper (o sin 'with'), la próxima
+    vez que se conecte un GCSDevice en el mismo proceso (por ejemplo,
+    correr el mismo script de nuevo en la misma consola de Spyder sin
+    reiniciar el kernel), ese callback stale se dispara también, apuntando
+    a una conexión ya cerrada, y produce un PIFtdiConnectionError confuso
+    en una conexión que en realidad está viva.
+
+    Uso: reemplazar pidevice.close() por cleanup_gcsdevice(pidevice).
+    """
+    try:
+        interface = pidevice.gcsdevice.messages.interface
+        interface.unregister_connection_status_changed_callback(pidevice.connection_status_changed)
+    except AttributeError:
+        pass
+    pidevice.close()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pi-ftdi-gateway"
-version = "0.3.1"
+version = "0.3.2"
 description = "Gateway PIGateway para hablar GCS2 con controladores PI (probado en E-545/E-517) sobre macOS, sin la DLL/dylib propietaria de PI."
 readme = "README.md"
 requires-python = ">=3.9"

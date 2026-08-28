@@ -32,17 +32,30 @@ Uso en Spyder:
 
 # %% -- Imports --------------------------------------------------
 from pipython import GCSDevice, pitools
-from pi_ftdi_gateway import PIFtdiGateway
+from pi_ftdi_gateway import PIFtdiGateway, cleanup_gcsdevice
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import time
+from datetime import datetime
+from pathlib import Path
+
+# [Reorganización 2026-08-28] Rutas fijas al repo, no al directorio de
+# trabajo actual -- así da igual desde dónde se corra el script (Spyder
+# corre con --wdir en la carpeta del script, no en la raíz del repo).
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DATOS_RAW = REPO_ROOT / "datos" / "raw"
+DATOS_METADATA = REPO_ROOT / "datos" / "metadata"
+RESULTADOS_FIGURAS = REPO_ROOT / "resultados" / "figuras"
+for _dir in (DATOS_RAW, DATOS_METADATA, RESULTADOS_FIGURAS):
+    _dir.mkdir(parents=True, exist_ok=True)
 
 
 # %% -- Parámetros del experimento -------------------------------
 # [ELEGIDO] Excursión chica: 200 nm total en X, en torno al centro del rango
 CENTRO_X    = 100.0   # µm, centro del scan (medio del rango 0..200)
 CENTRO_Y    = 100.0   # µm, Y queda quieto acá
-AMPLITUD    = 0.100   # µm, semi-amplitud → excursión total = 200 nm
+AMPLITUD    = 0.5   # µm, semi-amplitud 
 
 # [ELEGIDO] Timing
 # [MEDIDO — E517_diagnostico.py, SPA 0x0E000200] Servo update time = 40 µs.
@@ -73,13 +86,14 @@ pidevice.ONL([1, 2, 3], [1, 1, 1])
 
 # Servo cerrado en X e Y (Z lo dejamos como esté)
 pidevice.SVO(['A', 'B'], [True, True])
+#pidevice.VEL(['A', 'B'], [100.0, 100.0])   # µm/s, solo para los MOV de acá
 
-# Ir al centro del scan con MOV; VEL alta para no tardar minutos
-pidevice.VEL(['A', 'B'], [100.0, 100.0])   # µm/s
-pidevice.MOV(['A', 'B'], [CENTRO_X, CENTRO_Y])
-pitools.waitontarget(pidevice, ['A', 'B'], timeout=10)
-print(f"[MOV inicial] llegó a {dict(pidevice.qPOS())}")
+# Servo con compensacion de deriva y sin control de velocidad
 
+pidevice.DCO(['A', 'B'], [False, False]) 
+print(pidevice.qDCO())
+pidevice.VCO(['A', 'B'], [False, False])
+print(pidevice.qVCO())
 
 # %% -- Construcción de la trayectoria (Python) ------------------
 # Trayectoria triangular en coordenadas absolutas del stage.
@@ -95,6 +109,25 @@ assert len(trayectoria) == N_TOTAL
 
 print(f"[trayectoria] rango físico: {trayectoria.min():.4f} .. "
       f"{trayectoria.max():.4f} µm (excursión: {2*AMPLITUD*1000:.0f} nm)")
+
+
+# %% -- Ir al punto de partida de la trayectoria y asentar -------
+# [DECISIÓN 2026-08-28] Antes íbamos a CENTRO_X con MOV y arrancábamos la
+# wave table ahí: como el primer punto de la wave es CENTRO_X-AMPLITUD, el
+# "target" pegaba un salto instantáneo de ~100 nm justo al disparar WGO,
+# contaminando la "ida" con un transitorio de escalón fresco (visible como
+# el pico de error grande al principio del gráfico, y probablemente parte
+# de la asimetría ida/vuelta que vimos). Ahora vamos directo al primer
+# punto de la wave (trayectoria[0]) y dejamos asentar ANTES de disparar
+# WGO — así la wave arranca sobre un sistema ya quieto, sin escalón previo.
+pidevice.MOV(['A', 'B'], [float(trayectoria[0]), CENTRO_Y])
+pitools.waitontarget(pidevice, ['A', 'B'], timeout=10)
+
+T_ASENTAMIENTO_S = 0.5   # [ELEGIDO] margen generoso; ver E517_diagnostico.py
+                          # si se quiere afinar con la dinámica real medida
+time.sleep(T_ASENTAMIENTO_S)
+print(f"[posición inicial + asentamiento {T_ASENTAMIENTO_S}s] "
+      f"{dict(pidevice.qPOS())}")
 
 
 # %% -- Helper: leer un array GCS asíncrono (qGWD/qDRR) --------------
@@ -226,11 +259,39 @@ print(f"[error tracking] max = {np.max(np.abs(error))*1000:.2f} nm, "
       f"RMS = {np.sqrt(np.mean(error**2))*1000:.2f} nm")
 
 
+# %% -- Guardar los datos crudos (para analizar después) ----------
+# Un CSV con los datos + un .txt con los metadatos del experimento
+# (parámetros elegidos y medidos), con timestamp en el nombre para no
+# pisar corridas anteriores.
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+nombre_base = f"E517_ida_vuelta_{timestamp}"
+
+df = pd.DataFrame({
+    't_ms': t_ms,
+    'target_um': target,
+    'current_um': current,
+    'error_um': error,
+})
+df.to_csv(DATOS_RAW / f"{nombre_base}.csv", index=False)
+
+with open(DATOS_METADATA / f"{nombre_base}_metadata.txt", 'w') as f:
+    f.write(f"E517_ida_vuelta.py -- {timestamp}\n")
+    f.write(f"CENTRO_X={CENTRO_X} CENTRO_Y={CENTRO_Y} AMPLITUD={AMPLITUD}\n")
+    f.write(f"T_SERVO_US={T_SERVO_US} WTR={WTR} RTR_VAL={RTR_VAL}\n")
+    f.write(f"N_IDA={N_IDA} N_VUELTA={N_VUELTA} N_TOTAL={N_TOTAL}\n")
+    f.write(f"T_ASENTAMIENTO_S={T_ASENTAMIENTO_S}\n")
+    f.write(f"n_leer={n_leer} muestras_leidas={len(current)}\n")
+    f.write(f"error_max_nm={np.max(np.abs(error))*1000:.3f}\n")
+    f.write(f"error_rms_nm={np.sqrt(np.mean(error**2))*1000:.3f}\n")
+
+print(f"[guardado] {nombre_base}.csv + {nombre_base}_metadata.txt")
+
+
 # %% -- Volver al centro y cerrar --------------------------------
 pidevice.MOV(['A'], [CENTRO_X])
 pitools.waitontarget(pidevice, ['A'], timeout=5)
 print(f"[cierre] posición final {dict(pidevice.qPOS())}")
-pidevice.close()  # CloseConnection() es específico de la DLL nativa, no existe acá
+cleanup_gcsdevice(pidevice)  # deja la conexión lista para volver a correr el script
 
 
 # %% -- Gráficos --------------------------------------------
@@ -265,8 +326,8 @@ axes[2].set_aspect('equal')
 
 axes[1].set_xlabel('t [ms]')
 plt.tight_layout()
-plt.savefig('E517_ida_vuelta_200nm.svg', bbox_inches='tight', transparent=True)
-plt.savefig('E517_ida_vuelta_200nm.png', bbox_inches='tight', dpi=200)
+#plt.savefig(RESULTADOS_FIGURAS / 'E517_ida_vuelta_200nm.svg', bbox_inches='tight', transparent=True)
+plt.savefig(RESULTADOS_FIGURAS / 'E517_ida_vuelta_10nm.pdf', bbox_inches='tight', dpi=200)
 plt.show()
 
-print("\n[fin] gráficos guardados como E517_ida_vuelta_200nm.{svg,png}")
+#print("\n[fin] gráficos guardados como E517_ida_vuelta_200nm_2.{png}")

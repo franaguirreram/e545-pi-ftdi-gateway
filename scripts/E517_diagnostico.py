@@ -21,7 +21,7 @@ Uso en Spyder:
 # %% -- Imports y conexión --------------------------------------------------
 import time
 from pipython import GCSDevice, pitools
-from pi_ftdi_gateway import PIFtdiGateway
+from pi_ftdi_gateway import PIFtdiGateway, cleanup_gcsdevice
 import numpy as np
 
 pidevice = GCSDevice('E-517', gateway=PIFtdiGateway())
@@ -132,9 +132,10 @@ for cmd_desc, callable_ in [
 
 
 # %% -- Cierre limpio --------------------------------------------
-# CloseConnection() es específico de la DLL nativa (GCSDll) y no existe
-# en PISerial/PISocket ni en nuestro gateway; close() es la forma genérica.
-pidevice.close()
+# cleanup_gcsdevice() (no pidevice.close() suelto) para desregistrar el
+# callback de cambio de estado y poder volver a correr el script en la
+# misma consola sin reiniciar el kernel. Ver pi_ftdi_gateway/__init__.py.
+cleanup_gcsdevice(pidevice)
 print("\n" + "=" * 70)
 print("DIAGNÓSTICO — fin")
 print("=" * 70)

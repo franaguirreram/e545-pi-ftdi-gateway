@@ -153,12 +153,15 @@ comando en la práctica.
   registran un callback de cambio de estado en una lista **compartida a
   nivel de clase** (`PIGateway._connection_status_changed_callbacks`).
   Un `pidevice.close()` suelto no lo desregistra — solo `__exit__`/`__del__`
-  lo hacen. Crear varias conexiones en el mismo proceso (por ejemplo, un
-  script de prueba en loop) sin usar `with GCSDevice(...) as pidevice:`
+  lo hacen. Crear varias conexiones en el mismo proceso sin desregistrar
   acumula callbacks apuntando a gateways ya cerrados, y la siguiente
   conexión exitosa los dispara a todos — provoca errores confusos tipo
   `PIFtdiConnectionError: send() llamado sin conexión activa` en una
-  conexión que en realidad sí está viva. **Usar siempre `with`.**
+  conexión que en realidad sí está viva. **Usar `with GCSDevice(...) as
+  pidevice:`** cuando el script lo permite, o **`cleanup_gcsdevice(pidevice)`**
+  (agregado en v0.3.2) en vez de `pidevice.close()` para scripts pensados
+  para correrse celda por celda (Spyder/Jupyter), donde `with` no sirve
+  porque su cuerpo no puede repartirse en celdas separadas.
 - El timeout USB de bajo nivel queda deliberadamente acotado a 500 ms como
   máximo (`_USB_POLL_TIMEOUT_MS`), independiente de qué tan largo sea el
   timeout GCS configurado — así una lectura sin datos todavía no bloquea
